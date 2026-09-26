@@ -1,0 +1,316 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  우리 가족 사진 - EC2 1대(docker compose: 앱 + PostgreSQL) + ALB(HTTPS, ACM) + Route 53.
+  사용법은 deploy/aws-ec2/README.md 참고.
+
+Parameters:
+  HostName:
+    Type: String
+    Description: 서비스 주소 (예 photos.netdoctor.shop). HostedZone 안의 이름이어야 합니다.
+  DomainName:
+    Type: String
+    Description: Route 53 호스팅 영역 도메인 (예 netdoctor.shop). 새 인증서는 *.DomainName 으로 발급됩니다.
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+  CertificateArn:
+    Type: String
+    Default: ""
+    Description: >-
+      기존 ACM 인증서 ARN (같은 리전). 비우면 *.DomainName 인증서를 새로 만들고 DNS 검증합니다.
+      이미 같은 도메인 인증서가 있다면 그 ARN을 넣으세요(검증 CNAME이 같아서 스택 삭제 시 기존 인증서 갱신이 깨질 수 있음).
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: 퍼블릭 서브넷 2개 이상(서로 다른 AZ). EC2는 첫 번째 서브넷에 생성됩니다.
+  InstanceType:
+    Type: String
+    Default: t3.small
+  VolumeSize:
+    Type: Number
+    Default: 30
+    Description: EC2 루트 볼륨(GB). DB와 사진이 여기에 저장됩니다.
+  SecretsPrefix:
+    Type: String
+    Default: /family-photos
+    AllowedPattern: "^/[A-Za-z0-9_./-]+$"
+    Description: SSM Parameter Store 경로. bootstrap-secrets.sh로 AUTH_SECRET, POSTGRES_PASSWORD를 먼저 만드세요.
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Conditions:
+  CreateCertificate: !Equals [!Ref CertificateArn, ""]
+
+Resources:
+  # ── 배포 소스 버킷 (deploy.sh가 tar.gz 업로드) ─────────────────
+  DeployBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-releases
+            Status: Enabled
+            Prefix: releases/
+            ExpirationInDays: 90
+
+  # ── EC2 IAM 역할: SSM 접속, 배포 버킷 읽기, 비밀값 읽기 ─────────
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: deploy-bucket-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "${DeployBucket.Arn}/*"
+        - PolicyName: app-secrets-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [ssm:GetParameter, ssm:GetParameters]
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/*"
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  # ── 보안 그룹: 인터넷 → ALB(80/443) → EC2(80) ────────────────
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${AWS::StackName} ALB HTTP/HTTPS"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIpv6: "::/0" }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIpv6: "::/0" }
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${AWS::StackName} app (ALB only, no SSH)"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+          Description: from-ALB
+
+  # ── EC2 ─────────────────────────────────────────────────────
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        MetadataOptions:
+          HttpTokens: required
+          HttpEndpoint: enabled
+        TagSpecifications:
+          - ResourceType: volume
+            Tags:
+              - { Key: Name, Value: !Ref AWS::StackName }
+              - { Key: Backup, Value: !Ref AWS::StackName }
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Select [0, !Ref SubnetIds]
+      SecurityGroupIds: [!Ref InstanceSecurityGroup]
+      IamInstanceProfile: !Ref InstanceProfile
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref VolumeSize
+            VolumeType: gp3
+            Encrypted: true
+            # DB와 사진이 들어 있으므로 인스턴스/스택을 지워도 볼륨은 남긴다
+            DeleteOnTermination: false
+      Tags:
+        - { Key: Name, Value: !Ref AWS::StackName }
+        - { Key: Backup, Value: !Ref AWS::StackName }
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          # 최초 부팅 시 1회 실행: Docker/compose 설치, swap, 휴지통 정리 타이머
+          set -eux
+          dnf install -y docker
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          curl -fsSL https://github.com/docker/compose/releases/download/v2.39.4/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose
+          curl -fsSL https://github.com/docker/buildx/releases/download/v0.29.1/buildx-v0.29.1.linux-amd64 -o /usr/local/lib/docker/cli-plugins/docker-buildx
+          chmod +x /usr/local/lib/docker/cli-plugins/*
+          systemctl enable --now docker
+          # 2GB swap (t3.small에서 Next.js 빌드)
+          fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+          echo '/swapfile none swap sw 0 0' >> /etc/fstab
+          mkdir -p /opt/family-photos
+          # 매일 04:00 휴지통 정리 (remote-deploy.sh와 같은 compose 프로젝트 이름을 써야 같은 DB에 붙는다)
+          cat > /etc/systemd/system/family-photos-purge.service <<'U'
+          [Unit]
+          Description=Purge expired trash (family-photos)
+          [Service]
+          Type=oneshot
+          WorkingDirectory=/opt/family-photos/app
+          Environment=COMPOSE_PROJECT_NAME=family-photos
+          ExecStart=/usr/bin/docker compose -f docker-compose.yml -f docker-compose.aws.yml run --rm migrate npm run purge-trash
+          U
+          cat > /etc/systemd/system/family-photos-purge.timer <<'U'
+          [Unit]
+          Description=Daily trash purge
+          [Timer]
+          OnCalendar=*-*-* 04:00:00
+          Persistent=true
+          [Install]
+          WantedBy=timers.target
+          U
+          systemctl daemon-reload
+          systemctl enable --now family-photos-purge.timer
+          touch /opt/family-photos/.bootstrap-done
+
+  # 외부 통신(이미지 빌드 시 npm, Docker Hub)용 고정 IP. 웹 트래픽은 ALB로만 들어온다.
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref Instance
+      Tags:
+        - { Key: Name, Value: !Ref AWS::StackName }
+
+  # ── HTTPS: ACM + ALB ────────────────────────────────────────
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Condition: CreateCertificate
+    Properties:
+      DomainName: !Sub "*.${DomainName}"
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Sub "*.${DomainName}"
+          HostedZoneId: !Ref HostedZoneId
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: application
+      Scheme: internet-facing
+      Subnets: !Ref SubnetIds
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      LoadBalancerAttributes:
+        # 사진 업로드(최대 30MB)·앨범 ZIP 스트리밍
+        - { Key: idle_timeout.timeout_seconds, Value: "300" }
+        - { Key: routing.http.drop_invalid_header_fields.enabled, Value: "true" }
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 80
+      TargetType: instance
+      HealthCheckPath: /api/health
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      Targets:
+        - Id: !Ref Instance
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig: { Protocol: HTTPS, Port: "443", StatusCode: HTTP_301 }
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: HTTPS
+      Port: 443
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-Res-2021-06
+      Certificates:
+        - CertificateArn: !If [CreateCertificate, !Ref Certificate, !Ref CertificateArn]
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref HostName
+      Type: A
+      AliasTarget:
+        DNSName: !Sub "dualstack.${LoadBalancer.DNSName}"
+        HostedZoneId: !GetAtt LoadBalancer.CanonicalHostedZoneID
+        EvaluateTargetHealth: true
+
+  # ── 백업: 매일 03:00 KST EBS 스냅샷, 7개 보관 ──────────────────
+  SnapshotRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: dlm.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole
+
+  SnapshotPolicy:
+    Type: AWS::DLM::LifecyclePolicy
+    Properties:
+      Description: !Sub "${AWS::StackName} daily EBS snapshots"
+      State: ENABLED
+      ExecutionRoleArn: !GetAtt SnapshotRole.Arn
+      PolicyDetails:
+        ResourceTypes: [VOLUME]
+        TargetTags:
+          - { Key: Backup, Value: !Ref AWS::StackName }
+        Schedules:
+          - Name: daily
+            CreateRule: { Interval: 24, IntervalUnit: HOURS, Times: ["18:00"] }
+            RetainRule: { Count: 7 }
+            CopyTags: true
+
+Outputs:
+  AppUrl:
+    Value: !Sub "https://${HostName}"
+  InstanceId:
+    Value: !Ref Instance
+  DeployBucket:
+    Value: !Ref DeployBucket
+  SecretsPrefix:
+    Value: !Ref SecretsPrefix
+  LoadBalancerDns:
+    Value: !GetAtt LoadBalancer.DNSName
+  ElasticIp:
+    Value: !Ref ElasticIp

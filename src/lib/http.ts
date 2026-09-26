@@ -82,11 +82,15 @@ function refererOrigin(referer: string | null) {
   }
 }
 
-/** Rate limit 키 등에 사용하는 클라이언트 IP. 프록시 뒤에 있을 때만 X-Forwarded-For를 신뢰한다. */
+/**
+ * Rate limit 키 등에 사용하는 클라이언트 IP. 프록시 뒤에 있을 때만 X-Forwarded-For를 신뢰한다.
+ * 맨 앞 값은 클라이언트가 임의로 보낼 수 있으므로, 신뢰하는 프록시(ALB/Nginx 1단)가 덧붙인 마지막 값을 사용한다.
+ */
 export function clientIp(req: Request): string {
   if (env().TRUST_PROXY) {
     const xff = req.headers.get("x-forwarded-for");
-    if (xff) return xff.split(",")[0]!.trim();
+    const last = xff?.split(",").at(-1)?.trim();
+    if (last) return last;
     const real = req.headers.get("x-real-ip");
     if (real) return real;
   }
