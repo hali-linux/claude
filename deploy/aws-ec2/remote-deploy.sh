@@ -1,9 +1,10 @@
 #!/bin/bash
 # EC2 인스턴스에서 실행 (deploy.sh가 SSM Run Command로 호출)
-#   remote-deploy.sh <s3 소스 tar.gz URI> <APP_URL>
+#   remote-deploy.sh <s3 소스 tar.gz URI> <APP_URL> [TRUST_PROXY]
 set -euo pipefail
 SRC_URI="$1"
 APP_URL="$2"
+TRUST_PROXY="${3:-false}"
 REGION=ap-northeast-2
 BASE=/opt/family-photos
 APP="$BASE/app"
@@ -26,7 +27,7 @@ APP_URL=$APP_URL
 ALLOW_OPEN_REGISTRATION=false
 TZ=Asia/Seoul
 NEXT_PUBLIC_TIMEZONE=Asia/Seoul
-TRUST_PROXY=false
+TRUST_PROXY=$TRUST_PROXY
 STORAGE_DRIVER=local
 IMAGE_CONCURRENCY=1
 ENV
