@@ -22,6 +22,41 @@ EC2는 ALB 보안 그룹에서 오는 트래픽만 받으므로 인스턴스 IP�
 | 백업 | DLM 정책 `policy-06112ddfe18cb057f`: 매일 03:00 KST EBS 스냅샷, 7개 보관 |
 | 휴지통 정리 | 인스턴스의 systemd 타이머 `family-photos-purge.timer` (매일 04:00) |
 
+## 파일
+
+| 파일 | 역할 |
+| --- | --- |
+| `cloudformation.yml` | 전체 인프라(EC2 + 초기 설정 스크립트, ALB, ACM, Route 53, 보안 그룹, IAM, 배포 버킷, 스냅샷 백업) |
+| `bootstrap-secrets.sh` | `AUTH_SECRET`, `POSTGRES_PASSWORD`를 SSM Parameter Store에 생성(있으면 유지) |
+| `deploy.sh` | 현재 커밋을 S3에 올리고 SSM으로 EC2에서 빌드·재시작 |
+| `remote-deploy.sh` | EC2에서 실행: 소스 받기, `.env` 작성, `docker compose up` |
+| `docker-compose.aws.yml` | 운영용 override(80 포트, DB 포트 비노출, 로그 크기 제한) |
+
+> 현재 운영 서버(위 표)는 AWS CLI로 직접 만든 것이며 CloudFormation 스택이 아닙니다. `cloudformation.yml`은 같은 구성을 새로 만들 때 쓰는 템플릿입니다.
+
+## 새 환경 만들기 (CloudFormation)
+
+```bash
+export AWS_DEFAULT_REGION=ap-northeast-2
+STACK=family-photos
+deploy/aws-ec2/bootstrap-secrets.sh /family-photos        # 1) 비밀값
+
+aws cloudformation deploy --stack-name $STACK \
+  --template-file deploy/aws-ec2/cloudformation.yml --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    HostName=photos.netdoctor.shop DomainName=netdoctor.shop HostedZoneId=Z02143121ZEQVYIDYL9E2 \
+    VpcId=vpc-xxxx SubnetIds=subnet-aaaa,subnet-bbbb \
+    SecretsPrefix=/family-photos \
+    CertificateArn=arn:aws:acm:ap-northeast-2:...:certificate/...   # 2) 인프라 (인증서를 새로 만들려면 CertificateArn 생략)
+
+STACK_NAME=$STACK deploy/aws-ec2/deploy.sh               # 3) 앱 배포 (EC2 초기 설정이 끝날 때까지 자동 대기)
+```
+
+- `SubnetIds`는 서로 다른 AZ의 퍼블릭 서브넷 2개 이상이어야 합니다(ALB 요구사항).
+- `CertificateArn`을 비우면 `*.DomainName` 인증서를 새로 만들고 Route 53으로 DNS 검증합니다. 같은 도메인의 인증서가 이미 있으면 그 ARN을 넣으세요. 검증용 CNAME 이름이 같아서, 새로 만든 스택을 지울 때 기존 인증서의 자동 갱신용 레코드까지 지워질 수 있습니다.
+- EC2 루트 볼륨(DB·사진)은 스택을 지워도 남도록 `DeleteOnTermination: false`입니다. 필요 없으면 직접 삭제하세요.
+- 기존 서버의 데이터를 옮길 때는 EBS 스냅샷에서 볼륨을 만들거나 `pg_dump` + `photos` 볼륨 복사를 사용하세요.
+
 ## 재배포
 
 ```bash

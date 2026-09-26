@@ -1,11 +1,12 @@
 #!/bin/bash
 # EC2 인스턴스에서 실행 (deploy.sh가 SSM Run Command로 호출)
-#   remote-deploy.sh <s3 소스 tar.gz URI> <APP_URL> [TRUST_PROXY]
+#   remote-deploy.sh <s3 소스 tar.gz URI> <APP_URL> [TRUST_PROXY] [SSM 비밀값 경로] [리전]
 set -euo pipefail
 SRC_URI="$1"
 APP_URL="$2"
 TRUST_PROXY="${3:-false}"
-REGION=ap-northeast-2
+PARAM_PREFIX="${4:-/family-photos}"
+REGION="${5:-ap-northeast-2}"
 BASE=/opt/family-photos
 APP="$BASE/app"
 
@@ -13,7 +14,7 @@ APP="$BASE/app"
 for _ in $(seq 1 60); do [ -f "$BASE/.bootstrap-done" ] && break; sleep 5; done
 [ -f "$BASE/.bootstrap-done" ] || { echo "bootstrap not finished"; exit 1; }
 
-param() { aws ssm get-parameter --region "$REGION" --with-decryption --name "/family-photos/$1" --query Parameter.Value --output text; }
+param() { aws ssm get-parameter --region "$REGION" --with-decryption --name "$PARAM_PREFIX/$1" --query Parameter.Value --output text; }
 
 rm -rf "$APP.new" && mkdir -p "$APP.new"
 aws s3 cp --region "$REGION" "$SRC_URI" - | tar -xz -C "$APP.new"
