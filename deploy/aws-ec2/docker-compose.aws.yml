@@ -1,0 +1,14 @@
+# AWS EC2 단일 서버용 override
+#   docker compose -f docker-compose.yml -f deploy/aws-ec2/docker-compose.aws.yml up -d --build
+# (remote-deploy.sh가 이 파일을 앱 루트에 docker-compose.aws.yml로 복사해 사용)
+services:
+  db:
+    # DB 포트를 호스트에 노출하지 않음
+    ports: !reset []
+  app:
+    # 80번 포트로 서비스 (보안 그룹에서 80만 허용)
+    ports: !override
+      - "80:3000"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
