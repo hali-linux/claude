@@ -1,0 +1,210 @@
+// 가족사진 공유 서비스 데이터베이스 스키마
+//
+// 설계 원칙
+// - 모든 사진/앨범은 반드시 하나의 Family에 소속된다. 접근 권한 검사는 항상 familyId 기준으로 수행한다.
+// - 사용자는 여러 가족 그룹에 참여할 수 있다(FamilyMember N:M 조인 테이블).
+// - 사진은 Soft Delete(deletedAt) 방식으로 삭제하여 관리자가 복구할 수 있게 한다.
+// - 세션/초대 토큰은 원문이 아닌 HMAC 해시만 저장한다(DB가 유출되어도 토큰 재사용 불가).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// 시스템 전체 역할. ADMIN은 서비스 운영자(최초 가입자)이다.
+enum UserRole {
+  ADMIN
+  MEMBER
+}
+
+/// 가족 그룹 내 역할. 가족 관리자(ADMIN)는 구성원/앨범/사진을 관리할 수 있다.
+enum FamilyRole {
+  ADMIN
+  MEMBER
+}
+
+enum ActivityType {
+  PHOTO_UPLOAD
+  ALBUM_CREATE
+  MEMBER_JOIN
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String   @db.VarChar(50)
+  email        String   @unique @db.VarChar(255) // 항상 소문자로 정규화하여 저장
+  passwordHash String
+  role         UserRole @default(MEMBER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions            Session[]
+  memberships         FamilyMember[]
+  photos              Photo[]        @relation("PhotoUploader")
+  deletedPhotos       Photo[]        @relation("PhotoDeleter")
+  favorites           Favorite[]
+  albumsCreated       Album[]
+  invitationsSent     Invitation[]   @relation("InvitationInviter")
+  invitationsAccepted Invitation[]   @relation("InvitationAcceptor")
+  activities          Activity[]
+}
+
+/// 서버 측 세션. 쿠키에는 무작위 토큰을, DB에는 토큰의 HMAC 해시를 저장한다.
+model Session {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique
+  userId     String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime @default(now())
+  userAgent  String?  @db.VarChar(255)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Family {
+  id          String   @id @default(cuid())
+  name        String   @db.VarChar(50)
+  description String?  @db.VarChar(500)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members     FamilyMember[]
+  albums      Album[]
+  photos      Photo[]
+  invitations Invitation[]
+  activities  Activity[]
+}
+
+model FamilyMember {
+  id       String     @id @default(cuid())
+  familyId String
+  userId   String
+  role     FamilyRole @default(MEMBER)
+  joinedAt DateTime   @default(now())
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([familyId, userId])
+  @@index([userId])
+}
+
+model Album {
+  id           String   @id @default(cuid())
+  familyId     String
+  name         String   @db.VarChar(100)
+  description  String?  @db.VarChar(1000)
+  coverPhotoId String?  @unique
+  createdById  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  family     Family     @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  coverPhoto Photo?     @relation("AlbumCover", fields: [coverPhotoId], references: [id], onDelete: SetNull)
+  createdBy  User?      @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  photos     Photo[]    @relation("AlbumPhotos")
+  activities Activity[]
+
+  @@index([familyId, createdAt])
+}
+
+model Photo {
+  id           String    @id @default(cuid())
+  familyId     String
+  albumId      String?
+  uploaderId   String?
+  originalName String    @db.VarChar(255)
+  description  String?   @db.VarChar(2000)
+  mimeType     String    @db.VarChar(50)
+  /// 원본 파일 크기(byte)
+  sizeBytes    Int
+  /// 원본 + 파생 이미지(썸네일/대형)의 총 저장 용량(byte)
+  storageBytes Int
+  width        Int
+  height       Int
+  /// EXIF 촬영 일시(없으면 null)
+  takenAt      DateTime?
+  /// 원본 파일 SHA-256 (중복 업로드 감지용)
+  sha256       String    @db.VarChar(64)
+  originalKey  String
+  largeKey     String
+  thumbKey     String
+  deletedAt    DateTime?
+  deletedById  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  family    Family     @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  album     Album?     @relation("AlbumPhotos", fields: [albumId], references: [id], onDelete: SetNull)
+  uploader  User?      @relation("PhotoUploader", fields: [uploaderId], references: [id], onDelete: SetNull)
+  deletedBy User?      @relation("PhotoDeleter", fields: [deletedById], references: [id], onDelete: SetNull)
+  favorites Favorite[]
+  coverOf   Album?     @relation("AlbumCover")
+
+  @@index([familyId, deletedAt, createdAt])
+  @@index([familyId, takenAt])
+  @@index([albumId, createdAt])
+  @@index([uploaderId])
+  @@index([createdAt])
+  @@index([familyId, sha256])
+}
+
+model Favorite {
+  userId    String
+  photoId   String
+  createdAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  photo Photo @relation(fields: [photoId], references: [id], onDelete: Cascade)
+
+  @@id([userId, photoId])
+  @@index([photoId])
+  @@index([userId, createdAt])
+}
+
+model Invitation {
+  id           String     @id @default(cuid())
+  familyId     String
+  email        String     @db.VarChar(255)
+  role         FamilyRole @default(MEMBER)
+  tokenHash    String     @unique
+  invitedById  String?
+  expiresAt    DateTime
+  acceptedAt   DateTime?
+  acceptedById String?
+  revokedAt    DateTime?
+  createdAt    DateTime   @default(now())
+
+  family     Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  invitedBy  User?  @relation("InvitationInviter", fields: [invitedById], references: [id], onDelete: SetNull)
+  acceptedBy User?  @relation("InvitationAcceptor", fields: [acceptedById], references: [id], onDelete: SetNull)
+
+  @@index([familyId, createdAt])
+  @@index([email])
+}
+
+/// 홈 화면 "최근 활동" 피드
+model Activity {
+  id        String       @id @default(cuid())
+  familyId  String
+  actorId   String?
+  type      ActivityType
+  albumId   String?
+  count     Int          @default(1)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  actor  User?  @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  album  Album? @relation(fields: [albumId], references: [id], onDelete: SetNull)
+
+  @@index([familyId, updatedAt])
+}

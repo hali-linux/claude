@@ -1,0 +1,61 @@
+# 개발/소규모 자가호스팅용 구성
+#   cp .env.example .env   (AUTH_SECRET 설정)
+#   docker compose up -d
+#   → http://localhost:3000
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: family
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-family}
+      POSTGRES_DB: family_photos
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # 개발 편의를 위해 로컬 5432에 노출 (운영에서는 제거 권장)
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U family -d family_photos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # DB 마이그레이션을 1회 실행하고 종료
+  # (관리 작업에도 사용: docker compose run --rm migrate npm run purge-trash)
+  migrate:
+    build:
+      context: .
+      target: migrate
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://family:${POSTGRES_PASSWORD:-family}@db:5432/family_photos?schema=public
+      STORAGE_LOCAL_DIR: /app/storage
+    volumes:
+      - photos:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    build:
+      context: .
+      target: runner
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://family:${POSTGRES_PASSWORD:-family}@db:5432/family_photos?schema=public
+      STORAGE_LOCAL_DIR: /app/storage
+    ports:
+      - "3000:3000"
+    volumes:
+      - photos:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+  photos:
