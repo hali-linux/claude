@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="ko" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{{TITLE}}</title>
+  <link rel="icon" href="static/favicon.svg?v={{VERSION}}" type="image/svg+xml">
+  <link rel="stylesheet" href="static/vendor/xterm/xterm.css?v={{VERSION}}">
+  <link rel="stylesheet" href="static/app.css?v={{VERSION}}">
+</head>
+<body>
+  <!-- Login ------------------------------------------------------------ -->
+  <main id="login-view" class="login-view" hidden>
+    <form id="login-form" class="login-card" autocomplete="on" novalidate>
+      <div class="brand brand-lg">
+        <span class="logo" aria-hidden="true">&gt;_</span>
+        <span class="brand-name" data-bind="title">{{TITLE}}</span>
+      </div>
+      <p class="login-sub">서버 계정으로 로그인하세요.</p>
+      <label class="field">
+        <span>사용자 이름</span>
+        <input id="login-user" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+      </label>
+      <label class="field">
+        <span>비밀번호</span>
+        <input id="login-pass" name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <p id="login-error" class="form-error" role="alert" hidden></p>
+      <button id="login-submit" class="btn primary block" type="submit">로그인</button>
+      <p id="login-notice" class="login-notice" hidden></p>
+    </form>
+  </main>
+
+  <!-- Application --------------------------------------------------------- -->
+  <div id="app-view" class="app-view" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">&gt;_</span>
+        <span class="brand-name" data-bind="title">{{TITLE}}</span>
+      </div>
+      <span class="host-badge" title="접속한 서버"><span class="dot"></span><span id="host-name"></span></span>
+      <div class="spacer"></div>
+      <div class="menu-wrap">
+        <button class="topbar-btn" id="actions-btn" aria-haspopup="menu" aria-expanded="false">작업 <span aria-hidden="true">▾</span></button>
+        <div class="menu menu-right" id="actions-menu" role="menu" hidden>
+          <button role="menuitem" data-action="new-tab">새 탭</button>
+          <button role="menuitem" data-action="upload">파일 업로드</button>
+          <button role="menuitem" data-action="download">파일 다운로드</button>
+          <hr>
+          <button role="menuitem" data-action="settings">설정</button>
+          <button role="menuitem" data-action="shortcuts">키보드 단축키</button>
+        </div>
+      </div>
+      <div class="menu-wrap">
+        <button class="topbar-btn user-btn" id="user-btn" aria-haspopup="menu" aria-expanded="false">
+          <span class="avatar" id="user-avatar" aria-hidden="true"></span><span id="user-name"></span> <span aria-hidden="true">▾</span>
+        </button>
+        <div class="menu menu-right" id="user-menu" role="menu" hidden>
+          <div class="menu-info" id="user-info"></div>
+          <hr>
+          <button role="menuitem" data-action="logout">로그아웃</button>
+        </div>
+      </div>
+    </header>
+
+    <nav class="tabbar" aria-label="터미널 탭">
+      <div id="tabs" class="tabs" role="tablist"></div>
+      <button class="tab-add" id="tab-add" title="새 탭" aria-label="새 탭">+</button>
+    </nav>
+
+    <div id="idle-banner" class="idle-banner" role="status" hidden>
+      <span id="idle-text"></span>
+      <button class="btn small" id="idle-keep">계속 사용</button>
+    </div>
+
+    <section id="terminals" class="terminals">
+      <div id="drop-overlay" class="drop-overlay" hidden>여기에 놓으면 홈 디렉터리로 업로드합니다</div>
+    </section>
+
+    <footer class="statusbar">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text">연결 중…</span>
+      <span id="status-size" class="muted"></span>
+      <div class="spacer"></div>
+      <span id="status-idle" class="muted"></span>
+    </footer>
+  </div>
+
+  <!-- Dialogs ------------------------------------------------------------ -->
+  <dialog id="upload-dialog" class="dialog">
+    <form method="dialog">
+      <h2>파일 업로드</h2>
+      <label class="field">
+        <span>업로드할 디렉터리 <small>(~ = 홈 디렉터리)</small></span>
+        <input id="upload-dir" value="~" autocomplete="off" spellcheck="false">
+      </label>
+      <div id="drop-zone" class="drop-zone">
+        파일을 여기로 끌어다 놓거나
+        <button type="button" class="btn small" id="upload-pick">파일 선택</button>
+        <input type="file" id="upload-input" multiple hidden>
+      </div>
+      <label class="check"><input type="checkbox" id="upload-overwrite"> 같은 이름의 파일이 있으면 묻지 않고 덮어쓰기</label>
+      <ul id="upload-list" class="file-list"></ul>
+      <p class="hint" id="upload-limit"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" data-close>닫기</button>
+        <button type="button" class="btn primary" id="upload-start" disabled>업로드</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="download-dialog" class="dialog">
+    <form method="dialog" id="download-form">
+      <h2>파일 다운로드</h2>
+      <label class="field">
+        <span>파일 경로 <small>(~ = 홈 디렉터리, 상대 경로는 홈 기준)</small></span>
+        <input id="download-path" value="~/" autocomplete="off" spellcheck="false">
+      </label>
+      <p id="download-error" class="form-error" role="alert" hidden></p>
+      <p class="hint">디렉터리는 <code>tar czf dir.tgz dir</code> 로 묶은 뒤 받으세요.</p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" data-close>닫기</button>
+        <button class="btn primary" id="download-start">다운로드</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settings-dialog" class="dialog">
+    <form method="dialog">
+      <h2>설정</h2>
+      <label class="field inline">
+        <span>글꼴 크기</span>
+        <select id="set-font-size"></select>
+      </label>
+      <label class="field inline">
+        <span>테마</span>
+        <select id="set-theme">
+          <option value="dark">다크</option>
+          <option value="light">라이트</option>
+          <option value="system">시스템 설정 따르기</option>
+        </select>
+      </label>
+      <label class="field inline">
+        <span>커서 모양</span>
+        <select id="set-cursor">
+          <option value="block">블록</option>
+          <option value="bar">세로 막대</option>
+          <option value="underline">밑줄</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="set-blink"> 커서 깜박임</label>
+      <p class="hint">설정은 이 브라우저에만 저장됩니다.</p>
+      <div class="dialog-actions">
+        <button class="btn primary" value="close">완료</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="shortcuts-dialog" class="dialog">
+    <form method="dialog">
+      <h2>키보드 단축키</h2>
+      <table class="shortcuts">
+        <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd></td><td>선택한 텍스트 복사</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd></td><td>붙여넣기</td></tr>
+        <tr><td><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd></td><td>새 탭</td></tr>
+        <tr><td><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>←</kbd>/<kbd>→</kbd></td><td>이전 / 다음 탭</td></tr>
+        <tr><td><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>W</kbd></td><td>현재 탭 닫기</td></tr>
+      </table>
+      <p class="hint">macOS에서는 <kbd>⌘</kbd>+<kbd>C</kbd> / <kbd>⌘</kbd>+<kbd>V</kbd>도 사용할 수 있습니다.</p>
+      <div class="dialog-actions">
+        <button class="btn primary" value="close">닫기</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="dialog dialog-sm">
+    <form method="dialog">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-text"></p>
+      <div class="dialog-actions">
+        <button class="btn" value="cancel">취소</button>
+        <button class="btn primary" value="ok" id="confirm-ok">확인</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <noscript><p class="noscript">이 페이지를 사용하려면 JavaScript가 필요합니다.</p></noscript>
+
+  <script src="static/vendor/xterm/xterm.js?v={{VERSION}}"></script>
+  <script src="static/vendor/xterm/addon-fit.js?v={{VERSION}}"></script>
+  <script src="static/vendor/xterm/addon-web-links.js?v={{VERSION}}"></script>
+  <script src="static/app.js?v={{VERSION}}"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+#%PAM-1.0
+# PAM service used by WebTerm to check passwords and account validity
+# (installed as /etc/pam.d/webterm).  The shell session itself is started
+# with "runuser -l" and therefore goes through /etc/pam.d/runuser-l.
+auth       include      password-auth
+account    required     pam_nologin.so
+# Uncomment to control access with /etc/security/access.conf (per user/host):
+#account    required     pam_access.so
+account    include      password-auth

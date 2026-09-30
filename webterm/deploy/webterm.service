@@ -1,0 +1,41 @@
+[Unit]
+Description=WebTerm web server (browser based terminal)
+Documentation=file:///opt/webterm/README.md
+After=network.target webterm-helper.service
+Wants=webterm-helper.service
+
+[Service]
+Type=simple
+User=webterm
+Group=webterm
+WorkingDirectory=/opt/webterm
+ExecStart=/opt/webterm/venv/bin/python -s -E -m webterm.web --config /etc/webterm/webterm.conf
+Restart=on-failure
+RestartSec=2
+
+# This process is reachable (through httpd) from the network.  It only holds
+# PTY masters handed over by the helper and never needs any privilege.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,23 @@
+[Unit]
+Description=WebTerm privileged helper (PAM authentication, shell sessions)
+Documentation=file:///opt/webterm/README.md
+After=network.target systemd-user-sessions.service
+Before=webterm.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/webterm
+ExecStart=@PYTHON@ -s -E -m webterm.helper --config /etc/webterm/webterm.conf
+RuntimeDirectory=webterm
+RuntimeDirectoryMode=0755
+Restart=on-failure
+RestartSec=2
+# Shells started by the helper must survive a restart of the helper itself;
+# they end when the web server closes their terminal.
+KillMode=process
+# No sandboxing on purpose: every restriction set here (seccomp filters,
+# NoNewPrivileges, read-only mounts, ...) would be inherited by the users'
+# login shells and break sudo, networking, editing files, etc.
+
+[Install]
+WantedBy=multi-user.target

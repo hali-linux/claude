@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored, minified third-party bundle of the separate webterm project.
+    "webterm/webterm/static/vendor/**",
   ]),
 ]);
 

@@ -1,0 +1,6 @@
+@xterm/xterm 6.0.0
+@xterm/addon-fit 0.11.0
+@xterm/addon-web-links 0.12.0
+
+Files copied unmodified from the npm packages (lib/*.js, css/xterm.css),
+except that the trailing sourceMappingURL comment was removed.
