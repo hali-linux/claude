@@ -66,6 +66,15 @@ if [[ -n $CERT_FILE || -n $KEY_FILE ]]; then
     [[ -f $CERT_FILE && -f $KEY_FILE ]] || die "--cert 와 --key 를 함께, 존재하는 파일로 지정하세요."
 fi
 if [[ -n $PORT && ! $PORT =~ ^[0-9]+$ ]]; then die "--port 는 숫자여야 합니다."; fi
+# --add-user only adds existing accounts to the login group; check them
+# before anything is installed.
+for user in "${ADD_USERS[@]}"; do
+    if ! id -u "$user" >/dev/null 2>&1; then
+        die "사용자 '$user' 계정이 이 서버에 없습니다. --add-user 는 기존 계정을 로그인 허용 그룹에 추가만 합니다.
+       먼저 계정을 만들고 비밀번호를 설정한 뒤 다시 실행하세요:
+         sudo useradd -m $user && sudo passwd $user"
+    fi
+done
 
 # shellcheck disable=SC1091
 . /etc/os-release
@@ -96,9 +105,19 @@ if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
         --shell /sbin/nologin --comment "WebTerm web server" "$SERVICE_USER"
 fi
 for user in "${ADD_USERS[@]}"; do
-    id -u "$user" >/dev/null 2>&1 || die "사용자 $user 가 없습니다."
     usermod -aG "$USERS_GROUP" "$user"
     msg "  $user → $USERS_GROUP 그룹에 추가"
+    # Warn about accounts that still could not log in.
+    login_shell=$(getent passwd "$user" | cut -d: -f7)
+    case $login_shell in
+        */nologin|*/false|"") warn "$user 의 로그인 셸이 '${login_shell:-없음}' 이라 로그인할 수 없습니다: sudo usermod -s /bin/bash $user" ;;
+    esac
+    if [[ $(id -u "$user") -eq 0 ]]; then
+        warn "$user 는 UID 0 이라 기본 설정(allow_root = no)에서는 로그인이 차단됩니다."
+    fi
+    case $(passwd -S "$user" 2>/dev/null | awk '{print $2}') in
+        LK|L|NP) warn "$user 계정에 비밀번호가 없거나 잠겨 있어 로그인할 수 없습니다: sudo passwd $user" ;;
+    esac
 done
 
 # ---------------------------------------------------------- application

@@ -62,9 +62,15 @@ sudo dnf -y install git
 git clone <이 저장소 URL> webterm-src
 cd webterm-src/webterm
 
+# 로그인에 쓸 리눅스 계정이 없다면 먼저 만듭니다 (이미 있으면 생략)
+sudo useradd -m alice && sudo passwd alice
+
 # 도메인(또는 서버 IP)과 로그인을 허용할 사용자를 지정해 설치
 sudo ./deploy/install.sh --server-name shell.example.com --add-user alice
 ```
+
+`--add-user` 는 **이미 있는 계정**을 로그인 허용 그룹에 추가만 합니다. 계정이 없으면 설치를 시작하기
+전에 멈추고, 비밀번호가 없거나 로그인 셸이 `nologin` 인 계정이면 경고를 보여 줍니다.
 
 설치가 끝나면 브라우저에서 `https://shell.example.com/` 로 접속해 `alice` 계정으로 로그인합니다.
 자체 서명 인증서를 쓰는 동안은 브라우저 경고가 뜹니다(아래 “정식 인증서” 참고).
@@ -87,7 +93,7 @@ sudo ./deploy/install.sh --server-name shell.example.com --add-user alice
 | `--server-name NAME` | 접속 도메인 또는 IP (기본: `hostname -f`) |
 | `--port PORT` | 내부 웹 서버 포트 (기본 8022) |
 | `--cert FILE --key FILE` | 사용할 TLS 인증서/개인 키 (PEM) |
-| `--add-user USER` | 로그인 허용 그룹에 추가 (여러 번 사용 가능) |
+| `--add-user USER` | 기존 계정을 로그인 허용 그룹에 추가 (여러 번 사용 가능) |
 | `--python PATH` | Python 3.11+ 경로 지정 |
 | `--wheelhouse DIR` | 오프라인 설치용 wheel 디렉터리 |
 | `--no-firewall` | firewalld 를 건드리지 않음 |
