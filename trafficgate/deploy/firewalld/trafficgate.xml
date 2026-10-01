@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>TrafficGate</short>
+  <description>TrafficGate virtual waiting room public API (queue API, waiting page, JS agent). The admin console port (8801) is intentionally not included.</description>
+  <port protocol="tcp" port="8800"/>
+</service>

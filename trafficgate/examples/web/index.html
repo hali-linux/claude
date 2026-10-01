@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TrafficGate 데모 — 상품 페이지</title>
+<style>
+  body { font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #111827; }
+  .card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 20px; margin: 16px 0; }
+  .btn { display: inline-block; padding: 10px 18px; border-radius: 10px; background: #2563eb; color: #fff; text-decoration: none; border: 0; font-size: 15px; cursor: pointer; }
+  code { background: #f3f4f6; padding: 2px 6px; border-radius: 6px; }
+</style>
+<!-- 대기열 서버 주소에 맞게 바꾸세요 -->
+<script src="http://localhost:8800/trafficgate.js"></script>
+</head>
+<body>
+<h1>한정판 운동화 오픈 이벤트</h1>
+
+<div class="card">
+  <h2>1. 링크에 속성만 추가 (코드 없음)</h2>
+  <p><code>data-tg-segment</code> 를 붙이면 클릭 시 대기열을 통과한 뒤 이동합니다.</p>
+  <a class="btn" href="buy.html" data-tg-segment="default">구매하기</a>
+</div>
+
+<div class="card">
+  <h2>2. 스크립트로 직접 제어</h2>
+  <p>통과 토큰을 서버로 보내 검증할 수 있습니다.</p>
+  <button class="btn" id="order">주문 API 호출</button>
+  <pre id="log"></pre>
+</div>
+
+<div class="card">
+  <h2>3. 페이지 진입 자체를 대기</h2>
+  <a class="btn" href="landing.html">이벤트 페이지 열기</a>
+</div>
+
+<script>
+  document.getElementById('order').addEventListener('click', function () {
+    var log = document.getElementById('log');
+    TrafficGate.start('default', {
+      onProgress: function (r) { log.textContent = '대기 중: ' + r.position + '번째'; }
+    }).then(function (pass) {
+      log.textContent = '통과! 토큰: ' + pass.token.slice(0, 40) + '…';
+      // 실제 서비스: fetch('/api/order', { headers: { 'X-TrafficGate-Token': pass.token } })
+      //   .finally(function () { TrafficGate.complete('default'); });
+      setTimeout(function () { TrafficGate.complete('default'); log.textContent += '\n슬롯 반환 완료'; }, 1500);
+    }, function (err) {
+      log.textContent = '진입 불가: ' + err.status;
+    });
+  });
+</script>
+</body>
+</html>

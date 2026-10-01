@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // 별도 Go 프로젝트 (가상 대기실 서버)
+    "trafficgate/**",
   ]),
 ]);
 

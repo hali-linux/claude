@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>TrafficGate 관리 콘솔</title>
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<div id="login-view" class="login" hidden>
+  <form id="login-form" class="login-card" autocomplete="on">
+    <div class="brand"><span class="logo" aria-hidden="true"></span>TrafficGate</div>
+    <p class="sub">가상 대기실 관리 콘솔</p>
+    <label>아이디<input name="username" autocomplete="username" required></label>
+    <label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label>
+    <p class="error" id="login-error" role="alert"></p>
+    <button type="submit" class="btn primary wide">로그인</button>
+  </form>
+</div>
+
+<div id="app-view" hidden>
+  <header class="top">
+    <div class="brand"><span class="logo" aria-hidden="true"></span>TrafficGate <small id="sys-version"></small></div>
+    <div class="top-right">
+      <span id="sys-store" class="pill"></span>
+      <span id="sys-live" class="live" title="실시간 갱신">●</span>
+      <span id="me" class="me"></span>
+      <button id="logout" class="btn ghost">로그아웃</button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="summary" aria-label="전체 현황">
+      <div class="stat"><span>전체 대기</span><b id="sum-waiting">-</b></div>
+      <div class="stat"><span>입장 중</span><b id="sum-active">-</b></div>
+      <div class="stat"><span>초당 입장</span><b id="sum-rate">-</b></div>
+      <div class="stat"><span>세그먼트</span><b id="sum-segments">-</b></div>
+    </section>
+
+    <div class="toolbar">
+      <h2>세그먼트(대기실)</h2>
+      <button id="new-segment" class="btn primary">+ 새 세그먼트</button>
+    </div>
+    <div id="segments" class="segments"></div>
+    <p id="empty" class="empty" hidden>등록된 세그먼트가 없습니다. “새 세그먼트”로 대기실을 만들어 보세요.</p>
+  </main>
+  <footer class="foot" id="sys-foot"></footer>
+</div>
+
+<template id="segment-card">
+  <article class="seg">
+    <div class="seg-head">
+      <div>
+        <h3 class="seg-name"></h3>
+        <div class="badges"><code class="seg-id"></code><span class="badge mode"></span><span class="badge state" hidden></span></div>
+      </div>
+      <div class="seg-actions">
+        <button class="btn small act-guide">연동 가이드</button>
+        <button class="btn small act-edit">편집</button>
+        <button class="btn small danger-ghost act-reset">대기열 초기화</button>
+        <button class="btn small danger-ghost act-delete">삭제</button>
+      </div>
+    </div>
+    <div class="seg-body">
+      <div class="metrics">
+        <div class="metric"><span>대기</span><b class="m-waiting"></b><small class="m-live"></small></div>
+        <div class="metric"><span>입장 중 / 허용</span><b class="m-active"></b><div class="meter"><div class="meter-fill"></div></div></div>
+        <div class="metric"><span>초당 입장</span><b class="m-rate"></b><small class="m-enter"></small></div>
+        <div class="metric"><span>평균 대기</span><b class="m-wait"></b><small class="m-eta"></small></div>
+        <div class="metric"><span>누적 입장</span><b class="m-admitted"></b><small class="m-totals"></small></div>
+      </div>
+      <div class="chart-box">
+        <svg class="chart" viewBox="0 0 600 140" preserveAspectRatio="none" role="img" aria-label="최근 5분 대기/입장 추이">
+          <g class="grid"></g>
+          <path class="area-wait"></path>
+          <polyline class="line-wait"></polyline>
+          <polyline class="line-active"></polyline>
+        </svg>
+        <div class="legend"><span class="lg-wait">대기</span><span class="lg-active">입장 중</span><span class="lg-max"></span><span class="lg-range">최근 5분</span></div>
+      </div>
+    </div>
+    <div class="quick">
+      <label>진입 허용 수 <input type="number" class="q-max" min="0" step="1"></label>
+      <button class="btn small q-apply">적용</button>
+      <span class="sep"></span>
+      <div class="seg-mode" role="group" aria-label="모드">
+        <button class="btn small q-mode" data-mode="queue">대기열</button>
+        <button class="btn small q-mode" data-mode="bypass">제어 해제</button>
+        <button class="btn small q-mode" data-mode="block">차단</button>
+      </div>
+    </div>
+  </article>
+</template>
+
+<dialog id="edit-dialog" class="dialog">
+  <form id="edit-form" method="dialog" novalidate>
+    <h2 id="edit-title">세그먼트</h2>
+    <div class="form-grid">
+      <label>ID <small>영문/숫자/-/_ (변경 불가)</small><input name="id" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}"></label>
+      <label>이름<input name="name" maxlength="100"></label>
+      <label>모드
+        <select name="mode">
+          <option value="queue">대기열 (진입 허용 수 초과 시 대기)</option>
+          <option value="bypass">제어 해제 (모두 통과)</option>
+          <option value="block">차단 (모두 차단 안내)</option>
+        </select>
+      </label>
+      <label>진입 허용 수 <small>동시 입장 가능 인원, 0 = 입장 일시 정지</small><input name="max_active" type="number" min="0" required></label>
+      <label>슬롯 유지 시간(초) <small>complete 없을 때 자동 반환</small><input name="active_ttl_sec" type="number" min="1" max="86400"></label>
+      <label>통과 토큰 유효 시간(초)<input name="pass_ttl_sec" type="number" min="10" max="604800"></label>
+      <label>최대 대기 인원 <small>0 = 무제한</small><input name="max_waiting" type="number" min="0"></label>
+      <label class="span2">URL 패턴 <small>nginx 게이트 연동 시 제어할 경로, 한 줄에 하나 (예: /event/*)</small><textarea name="url_patterns" rows="2" spellcheck="false"></textarea></label>
+      <label>오픈 시각 <small>이전 도착자는 사전 대기실</small><input name="open_at" type="datetime-local" step="1"></label>
+      <label>종료 시각 <small>이후 종료 안내</small><input name="close_at" type="datetime-local" step="1"></label>
+      <label class="check span2"><input name="pre_queue_random" type="checkbox"> 오픈 전 도착자의 입장 순서를 오픈 시 무작위로 섞기 (매크로/봇 선점 완화)</label>
+      <label class="span2">대기 화면 제목<input name="title" maxlength="200" placeholder="접속 대기 중입니다"></label>
+      <label class="span2">대기 화면 안내 문구<textarea name="message" rows="2" maxlength="2000" placeholder="현재 접속자가 많아 순서대로 입장하고 있습니다."></textarea></label>
+      <label class="span2">차단 안내 문구<textarea name="block_message" rows="2" maxlength="2000"></textarea></label>
+      <label>종료 안내 문구<input name="closed_message" maxlength="2000"></label>
+      <label>종료 후 이동 URL<input name="closed_url" maxlength="2048" placeholder="https://… 또는 /path"></label>
+    </div>
+    <p class="error" id="edit-error" role="alert"></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn ghost" data-close>취소</button>
+      <button type="submit" class="btn primary" id="edit-save">저장</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="guide-dialog" class="dialog wide">
+  <div class="guide">
+    <h2>연동 가이드 — <span id="guide-seg"></span></h2>
+    <label class="inline">대기열 서버 공개 주소
+      <input id="guide-server" placeholder="https://wait.example.com" spellcheck="false">
+    </label>
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="js" role="tab">JS 에이전트</button>
+      <button class="tab" data-tab="nginx" role="tab">nginx 게이트 (코드 수정 없음)</button>
+      <button class="tab" data-tab="backend" role="tab">백엔드 토큰 검증</button>
+    </div>
+    <div class="tab-body" id="guide-body"></div>
+    <div class="dialog-actions"><button type="button" class="btn ghost" data-close>닫기</button></div>
+  </div>
+</dialog>
+
+<div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

@@ -1,0 +1,53 @@
+[Unit]
+Description=TrafficGate virtual waiting room (traffic control) server
+Documentation=file:///usr/share/doc/trafficgate/README.md
+After=network-online.target redis.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=trafficgate
+Group=trafficgate
+ExecStartPre=/usr/bin/trafficgate check-config -q -config /etc/trafficgate/config.yaml
+ExecStart=/usr/bin/trafficgate serve -config /etc/trafficgate/config.yaml
+# 선택: 비밀 값을 환경 변수로 주입 (TRAFFICGATE_TOKEN_SECRET, TRAFFICGATE_REDIS_PASSWORD 등)
+EnvironmentFile=-/etc/sysconfig/trafficgate
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+# 대기열 서버는 연결이 매우 많으므로 파일 디스크립터 한도를 넉넉히 준다.
+LimitNOFILE=1048576
+StateDirectory=trafficgate
+StateDirectoryMode=0750
+UMask=0027
+
+# ---- 보안 강화 (systemd-analyze security trafficgate 로 확인) ----
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
