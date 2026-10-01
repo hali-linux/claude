@@ -201,7 +201,7 @@
     '.tg.page{background:#f3f5f9}',
     '@media (prefers-color-scheme:dark){.tg{--tg-bg:#111827;--tg-fg:#f3f4f6;--tg-sub:#9ca3af;--tg-line:#1f2937;--tg-track:#1f2937}.tg.page{background:#0b1120}}',
     '.card{width:100%;max-width:420px;background:var(--tg-bg);border-radius:20px;padding:32px 28px 24px;box-sizing:border-box;',
-    'box-shadow:0 20px 60px rgba(0,0,0,.25);text-align:center}',
+    'box-shadow:0 20px 60px rgba(0,0,0,.25);text-align:center;outline:none}',
     '.spin{width:44px;height:44px;margin:0 auto 18px;border-radius:50%;border:4px solid var(--tg-track);border-top-color:var(--tg-accent);animation:r 1s linear infinite}',
     '@keyframes r{to{transform:rotate(360deg)}}',
     '@media (prefers-reduced-motion:reduce){.spin{animation-duration:3s}}',
@@ -224,13 +224,14 @@
     '.actions{margin-top:18px;display:flex;gap:8px;justify-content:center}',
     'button{font:inherit;font-size:14px;padding:9px 18px;border-radius:10px;border:1px solid var(--tg-line);background:transparent;color:var(--tg-fg);cursor:pointer}',
     'button:hover{background:var(--tg-track)}',
+    'button:focus-visible{outline:2px solid var(--tg-accent);outline-offset:2px}',
     'button.primary{background:var(--tg-accent);border-color:var(--tg-accent);color:#fff}',
     '[hidden]{display:none!important}'
   ].join('');
 
   var TEMPLATE =
     '<div class="tg" part="backdrop">' +
-    '<div class="card" role="dialog" aria-modal="true" aria-labelledby="tg-title">' +
+    '<div class="card" role="dialog" aria-modal="true" aria-labelledby="tg-title" tabindex="-1">' +
     '<div class="spin" aria-hidden="true"></div>' +
     '<h1 id="tg-title" class="title"></h1>' +
     '<p class="msg"></p>' +
@@ -289,8 +290,8 @@
     parent.appendChild(this.host);
     this.prevOverflow = document.documentElement.style.overflow;
     document.documentElement.style.overflow = 'hidden';
-    var btn = this.q('.cancel');
-    try { btn.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
+    // 스크린리더가 대기 안내를 읽도록 대화상자에 포커스를 둔다.
+    try { this.q('.card').focus({ preventScroll: true }); } catch (e) { /* ignore */ }
   };
 
   UI.prototype.unmount = function () {

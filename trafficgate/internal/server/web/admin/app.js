@@ -453,6 +453,7 @@
 <a href="/event/buy" data-tg-segment="${seg}">구매하기</a>
 
 <!-- 또는 직접 호출 -->
+<button id="buy">구매하기</button>
 <script>
   document.getElementById('buy').addEventListener('click', function (e) {
     e.preventDefault();

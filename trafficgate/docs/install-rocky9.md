@@ -197,7 +197,7 @@ sudo setsebool -P httpd_can_network_connect 1
 # RPM
 sudo dnf upgrade -y ./trafficgate-1.1.0-1.el9.x86_64.rpm     # 설정 유지, 자동 재시작
 sudo dnf downgrade -y ./trafficgate-1.0.0-1.el9.x86_64.rpm   # 롤백
-sudo dnf remove -y trafficgate                               # 제거 (설정 파일은 .rpmsave 로 보존)
+sudo dnf remove -y trafficgate                               # 제거 (/etc/trafficgate/config.yaml 은 남겨 둠)
 
 # 스크립트
 sudo ./install.sh                                            # 새 버전 압축 파일에서 실행 = 업그레이드

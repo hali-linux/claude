@@ -148,7 +148,10 @@ if [[ ! -f "$CONF" ]]; then
   args=(init-config -out "$CONF" -listen "$LISTEN" -admin-listen "$ADMIN_LISTEN"
         -store "$STORE" -redis-addr "$REDIS_ADDR" -data-dir "$DATA_DIR" -password-file "$PW_FILE")
   [[ -n "$ADMIN_PASSWORD" ]] && args+=(-admin-password "$ADMIN_PASSWORD")
-  "$BIN_DST" "${args[@]}" >/dev/null
+  if ! out=$("$BIN_DST" "${args[@]}" 2>&1); then
+    echo "$out" >&2
+    die "설정 파일 생성 실패"
+  fi
   chown root:trafficgate "$CONF"
   chmod 0640 "$CONF"
   chmod 0600 "$PW_FILE"
@@ -164,7 +167,7 @@ if [[ -f "${RES}/sysconfig.example" && ! -f /etc/sysconfig/trafficgate ]]; then
 fi
 
 # ---- systemd ----
-install -m 0644 -o root -g root "${RES}/systemd/trafficgate.service" "$UNIT_DST"
+install -D -m 0644 -o root -g root "${RES}/systemd/trafficgate.service" "$UNIT_DST"
 info "systemd 유닛 설치: $UNIT_DST"
 
 # ---- firewalld ----
@@ -189,6 +192,8 @@ if [[ -d /etc/firewalld ]]; then
   elif [[ $OPEN_FIREWALL -eq 1 || $OPEN_ADMIN_FIREWALL -eq 1 ]]; then
     warn "firewalld 가 실행 중이 아니어서 방화벽 설정을 건너뜁니다"
   fi
+elif [[ $OPEN_FIREWALL -eq 1 || $OPEN_ADMIN_FIREWALL -eq 1 ]]; then
+  warn "firewalld 가 설치되어 있지 않아 방화벽 설정을 건너뜁니다"
 fi
 
 # ---- SELinux ----

@@ -7,6 +7,8 @@
 # Go 툴체인 없이도 패키징할 수 있고, 폐쇄망(오프라인) 설치에 그대로 사용할 수 있다.
 
 %global debug_package %{nil}
+# 문서 경로를 RHEL 과 같이 /usr/share/doc/trafficgate 로 고정
+%global _docdir_fmt %{NAME}
 %global __strip /bin/true
 %{!?tg_version: %global tg_version 1.0.0}
 %{!?tg_goarch: %global tg_goarch amd64}
@@ -97,7 +99,7 @@ exit 0
 
 %files
 %doc README.md docs examples
-%doc deploy/nginx deploy/sysctl deploy/install.sh deploy/uninstall.sh
+%doc deploy/nginx deploy/sysctl
 /usr/bin/trafficgate
 %{tg_unitdir}/trafficgate.service
 /usr/lib/firewalld/services/trafficgate.xml
