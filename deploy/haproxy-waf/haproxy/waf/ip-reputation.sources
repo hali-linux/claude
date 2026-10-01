@@ -1,0 +1,5 @@
+# wafctl update-ipsets 가 내려받는 평판 목록 (한 줄에 URL 하나)
+# 형식: 한 줄에 IP/CIDR 하나(주석 ; #), 또는 {"cidr": "..."} JSON 줄
+# Spamhaus DROP: 범죄 조직이 장악한 대역(hijacked/leased). 오탐이 거의 없습니다.
+https://www.spamhaus.org/drop/drop_v4.json
+https://www.spamhaus.org/drop/drop_v6.json

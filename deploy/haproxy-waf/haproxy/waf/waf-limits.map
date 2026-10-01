@@ -1,0 +1,10 @@
+# WAF 숫자 한도 (런타임 변경: wafctl set <키> <값>)
+#
+# rate_limit_ip     IP당 5분 동안 허용 요청 수(정적 파일 제외). 넘으면 429
+#                   갤러리 썸네일 요청이 많고 가족이 같은 공유기(IP)를 쓰므로 넉넉하게 둡니다.
+rate_limit_ip 6000
+# rate_limit_auth   IP당 5분 동안 로그인/가입/비밀번호 변경/초대 수락 POST 수
+rate_limit_auth 30
+# max_upload_bytes  업로드 경로(body-skip-paths.lst)의 최대 Content-Length (35MB)
+#                   앱의 MAX_UPLOAD_MB(30MB)보다 약간 크게 둡니다.
+max_upload_bytes 36700160

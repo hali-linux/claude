@@ -1,0 +1,7 @@
+# 전역 WAF 설정 (런타임 변경: wafctl set <키> <값>)
+#
+# fail_open   WAF 에이전트 장애 시 요청 통과 여부 (≈ ALB waf.fail_open.enabled)
+#             false(기본): 503으로 차단  /  true: 검사 없이 통과
+fail_open false
+# geo_mode    국가 규칙: off | block | allow   (geo-countries.lst, wafctl update-geoip)
+geo_mode off

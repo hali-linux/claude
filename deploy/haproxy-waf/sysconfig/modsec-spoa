@@ -1,0 +1,7 @@
+# modsec-spoa 실행 옵션 (변경 후: systemctl restart modsec-spoa)
+#   -listen            HAProxy가 접속할 주소 (haproxy.cfg 의 backend spoe_modsecurity 와 같아야 함)
+#   -rules             ModSecurity 규칙 진입점
+#   -waf-log           AWS WAF 로그 형식 JSON (규칙에 걸린 요청만 기록)
+#   -waf-log-allowed   통과한 요청도 모두 기록 (트래픽이 많으면 로그가 커짐)
+#   -max-concurrency   동시에 검사할 요청 수 (기본: CPU 수 x 2)
+OPTIONS="-listen 127.0.0.1:12345 -rules /etc/modsec-spoa/main.conf -waf-log /var/log/modsec-spoa/waf.log"

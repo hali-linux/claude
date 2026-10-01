@@ -1,0 +1,642 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+"""wafctl - HAProxy + ModSecurity WAF 운영 도구  (≈ aws wafv2 / aws elbv2 CLI)
+
+HAProxy 런타임 API(/var/lib/haproxy/stats)로 재시작 없이 설정을 바꾸고,
+같은 내용을 /etc/haproxy/waf/ 의 파일에도 저장해 재시작 후에도 유지합니다.
+
+  wafctl status                          전체 상태 (WAF 에이전트, 대상, 모드, 설정)
+  wafctl mode [HOST [block|count|off]]   호스트별 WAF 모드 조회/변경
+  wafctl settings                        전역 설정 조회
+  wafctl set KEY VALUE                   전역 설정 변경 (fail_open, geo_mode, rate_limit_ip ...)
+  wafctl ip list [block|allow|reputation]
+  wafctl ip block|unblock|allow|unallow IP[/PREFIX]
+  wafctl rate [--min N]                  5분 요청 수 상위 IP (비율 기반 규칙 카운터)
+  wafctl rate reset IP                   IP의 비율 카운터 초기화
+  wafctl targets                         대상 그룹과 상태 확인 결과
+  wafctl target drain|ready|maint BACKEND/SERVER
+  wafctl events [--since 1h] [--blocked] [-n 20]   WAF 로그 요약
+  wafctl update-ipsets [--dry-run] [--force]       IP 평판 목록 갱신 (Spamhaus DROP)
+  wafctl update-geoip [--all] [--file CSV] [--dry-run]   국가 IP 대역 갱신 (DB-IP Lite)
+
+환경변수: HAPROXY_SOCKET, WAF_DIR, WAF_LOG
+"""
+import argparse
+import collections
+import datetime as dt
+import gzip
+import io
+import ipaddress
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+SOCKET = os.environ.get("HAPROXY_SOCKET", "/var/lib/haproxy/stats")
+WAF_DIR = os.environ.get("WAF_DIR", "/etc/haproxy/waf")
+WAF_LOG = os.environ.get("WAF_LOG", "/var/log/modsec-spoa/waf.log")
+
+MODE_MAP = os.path.join(WAF_DIR, "waf-mode.map")
+SETTINGS_MAP = os.path.join(WAF_DIR, "waf-settings.map")
+LIMITS_MAP = os.path.join(WAF_DIR, "waf-limits.map")
+LISTS = {
+    "block": os.path.join(WAF_DIR, "ip-blocklist.lst"),
+    "allow": os.path.join(WAF_DIR, "ip-allowlist.lst"),
+    "reputation": os.path.join(WAF_DIR, "ip-reputation.lst"),
+}
+GEO_LIST = os.path.join(WAF_DIR, "geo-countries.lst")
+GEO_MAP = os.path.join(WAF_DIR, "geoip-country.map")
+REPUTATION_SOURCES = os.path.join(WAF_DIR, "ip-reputation.sources")
+
+SETTINGS = {
+    # key: (map file, validator, description)
+    "fail_open": (SETTINGS_MAP, r"^(true|false)$", "에이전트 장애 시 통과(true) / 503 차단(false)"),
+    "geo_mode": (SETTINGS_MAP, r"^(off|block|allow)$", "국가 규칙 off | block | allow"),
+    "rate_limit_ip": (LIMITS_MAP, r"^[1-9][0-9]{0,8}$", "IP당 5분 요청 한도"),
+    "rate_limit_auth": (LIMITS_MAP, r"^[1-9][0-9]{0,8}$", "IP당 5분 로그인/가입 POST 한도"),
+    "max_upload_bytes": (LIMITS_MAP, r"^[1-9][0-9]{0,11}$", "업로드 최대 크기(바이트)"),
+}
+MODES = ("block", "count", "off")
+
+
+class CLIError(Exception):
+    pass
+
+
+# ── HAProxy runtime API ─────────────────────────────────────────────────────
+
+def haproxy(cmd, check=True):
+    """Run one runtime API command and return its output."""
+    if not os.path.exists(SOCKET):
+        raise CLIError("HAProxy 런타임 소켓이 없습니다: %s (HAProxy가 실행 중인가요?)" % SOCKET)
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(30)
+    try:
+        try:
+            s.connect(SOCKET)
+        except OSError as e:
+            raise CLIError("HAProxy 런타임 소켓에 연결할 수 없습니다(%s): %s" % (SOCKET, e))
+        s.sendall((cmd + "\n").encode())
+        chunks = []
+        while True:
+            b = s.recv(65536)
+            if not b:
+                break
+            chunks.append(b)
+    finally:
+        s.close()
+    out = b"".join(chunks).decode(errors="replace")
+    if check and len(out) < 1000 and CLI_ERROR_RE.search(out):
+        raise CLIError("HAProxy '%s' 실패: %s" % (" ".join(cmd.split(" ")[:3]), out.strip()))
+    return out
+
+
+# Runtime API errors are short human-readable lines; successful set/add/del
+# commands print nothing.
+CLI_ERROR_RE = re.compile(r"(?im)^(unknown|no such|missing|permission denied|require|invalid|failed|"
+                          r"can't|cannot|.*\bnot found\b|.*\bmust be\b)")
+
+
+def haproxy_available():
+    return os.path.exists(SOCKET)
+
+
+def show_map(path):
+    """Return {key: value} from the runtime map (falls back to the file)."""
+    if haproxy_available():
+        out = haproxy("show map %s" % path)
+        res = {}
+        for line in out.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) == 3 and parts[0].startswith("0x"):
+                res[parts[1]] = parts[2]
+        return res
+    return read_map_file(path)
+
+
+def show_acl(path):
+    if haproxy_available():
+        out = haproxy("show acl %s" % path)
+        return [p[1] for p in (l.split(None, 1) for l in out.splitlines()) if len(p) == 2 and p[0].startswith("0x")]
+    return read_list_file(path)
+
+
+# ── files ───────────────────────────────────────────────────────────────────
+
+def read_map_file(path):
+    res = {}
+    if os.path.exists(path):
+        for line in open(path, encoding="utf-8"):
+            line = line.strip()
+            if line and not line.startswith("#"):
+                k, _, v = line.partition(" ")
+                res[k] = v.strip()
+    return res
+
+
+def read_list_file(path):
+    if not os.path.exists(path):
+        return []
+    return [l.strip() for l in open(path, encoding="utf-8") if l.strip() and not l.strip().startswith("#")]
+
+
+def write_atomic(path, text):
+    d = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".wafctl-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        if os.path.exists(path):
+            st = os.stat(path)
+            os.chmod(tmp, st.st_mode & 0o777)
+            try:
+                os.chown(tmp, st.st_uid, st.st_gid)
+            except PermissionError:
+                pass
+        else:
+            os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+        restorecon(path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def restorecon(path):
+    """Keep the SELinux label of files in /etc/haproxy (Rocky Linux)."""
+    if os.path.exists("/usr/sbin/restorecon"):
+        subprocess.run(["/usr/sbin/restorecon", "-q", path], check=False)
+
+
+def map_file_set(path, key, value):
+    lines = open(path, encoding="utf-8").read().splitlines() if os.path.exists(path) else []
+    pat = re.compile(r"^\s*%s\s" % re.escape(key))
+    done = False
+    for i, line in enumerate(lines):
+        if pat.match(line + " "):
+            lines[i] = "%s %s" % (key, value)
+            done = True
+    if not done:
+        lines.append("%s %s" % (key, value))
+    write_atomic(path, "\n".join(lines) + "\n")
+
+
+def list_file_add(path, entry):
+    lines = open(path, encoding="utf-8").read().splitlines() if os.path.exists(path) else []
+    if entry in (l.strip() for l in lines):
+        return False
+    lines.append(entry)
+    write_atomic(path, "\n".join(lines) + "\n")
+    return True
+
+
+def list_file_remove(path, entry):
+    lines = open(path, encoding="utf-8").read().splitlines() if os.path.exists(path) else []
+    kept = [l for l in lines if l.strip() != entry]
+    if len(kept) == len(lines):
+        return False
+    write_atomic(path, "\n".join(kept) + "\n")
+    return True
+
+
+# ── helpers ─────────────────────────────────────────────────────────────────
+
+def norm_network(text):
+    try:
+        net = ipaddress.ip_network(text.strip(), strict=False)
+    except ValueError:
+        raise CLIError("올바른 IP 또는 CIDR이 아닙니다: %s" % text)
+    if net.num_addresses == 1:
+        return str(net.network_address)
+    return str(net)
+
+
+def runtime_map_set(path, key, value):
+    if not haproxy_available():
+        return
+    out = haproxy("set map %s %s %s" % (path, key, value), check=False)
+    if out.strip():  # key not present at runtime → add it
+        haproxy("add map %s %s %s" % (path, key, value))
+
+
+def table(rows, headers):
+    widths = [max(len(str(x)) for x in col) for col in zip(headers, *rows)] if rows else [len(h) for h in headers]
+    fmt = "  ".join("%%-%ds" % w for w in widths)
+    print(fmt % tuple(headers))
+    for r in rows:
+        print(fmt % tuple(r))
+
+
+def parse_stat():
+    out = haproxy("show stat")
+    lines = out.splitlines()
+    if not lines or not lines[0].startswith("# "):
+        raise CLIError("show stat 출력 형식을 알 수 없습니다")
+    header = lines[0][2:].split(",")
+    rows = []
+    for line in lines[1:]:
+        if line.strip():
+            rows.append(dict(zip(header, line.split(","))))
+    return rows
+
+
+# ── commands ────────────────────────────────────────────────────────────────
+
+def cmd_status(_args):
+    info = {}
+    for line in haproxy("show info").splitlines():
+        k, _, v = line.partition(":")
+        info[k.strip()] = v.strip()
+    print("HAProxy %s  uptime %s  current conns %s" % (info.get("Version", "?"), info.get("Uptime", "?"), info.get("CurrConns", "?")))
+    agent = subprocess.run(["systemctl", "is-active", "modsec-spoa"], capture_output=True, text=True).stdout.strip() \
+        if os.path.exists("/usr/bin/systemctl") else "?"
+    print("modsec-spoa service: %s" % agent)
+    print()
+    cmd_targets(_args)
+    print()
+    print("WAF 모드 (호스트별, 목록에 없는 호스트는 block):")
+    for host, mode in sorted(show_map(MODE_MAP).items()):
+        print("  %-40s %s" % (host, mode))
+    print()
+    cmd_settings(_args)
+    print()
+    for name, path in LISTS.items():
+        print("IP %-10s %d 항목" % (name, len(show_acl(path))))
+
+
+def cmd_mode(args):
+    if not args.host:
+        for host, mode in sorted(show_map(MODE_MAP).items()):
+            print("%-40s %s" % (host, mode))
+        return
+    host = args.host.lower()
+    if not args.value:
+        print(show_map(MODE_MAP).get(host, "block (기본값)"))
+        return
+    if args.value not in MODES:
+        raise CLIError("모드는 block, count, off 중 하나입니다")
+    runtime_map_set(MODE_MAP, host, args.value)
+    map_file_set(MODE_MAP, host, args.value)
+    print("%s → %s" % (host, args.value))
+
+
+def cmd_settings(_args):
+    print("전역 설정:")
+    values = {}
+    for path in (SETTINGS_MAP, LIMITS_MAP):
+        values.update(show_map(path))
+    for key, (_, _, desc) in SETTINGS.items():
+        print("  %-18s %-12s %s" % (key, values.get(key, "(기본값)"), desc))
+
+
+def cmd_set(args):
+    if args.key not in SETTINGS:
+        raise CLIError("알 수 없는 설정입니다: %s (가능: %s)" % (args.key, ", ".join(SETTINGS)))
+    path, pattern, _ = SETTINGS[args.key]
+    if not re.match(pattern, args.value):
+        raise CLIError("%s 값이 올바르지 않습니다: %s" % (args.key, args.value))
+    if args.key == "geo_mode" and args.value == "allow" and not read_list_file(GEO_MAP):
+        raise CLIError("geoip-country.map 이 비어 있습니다. 'allow' 로 바꾸면 모든 외부 요청이 차단됩니다.\n"
+                       "먼저 geo-countries.lst 를 확인하고 'wafctl update-geoip' 를 실행하세요.")
+    runtime_map_set(path, args.key, args.value)
+    map_file_set(path, args.key, args.value)
+    print("%s = %s" % (args.key, args.value))
+
+
+def cmd_ip(args):
+    if args.action == "list":
+        which = args.target or "block"
+        if which not in LISTS:
+            raise CLIError("목록은 block, allow, reputation 중 하나입니다")
+        for e in show_acl(LISTS[which]):
+            print(e)
+        return
+    if not args.target:
+        raise CLIError("IP 또는 CIDR을 지정하세요")
+    entry = norm_network(args.target)
+    path = LISTS["block"] if args.action in ("block", "unblock") else LISTS["allow"]
+    if args.action in ("block", "allow"):
+        if entry not in show_acl(path) and haproxy_available():
+            haproxy("add acl %s %s" % (path, entry))
+        list_file_add(path, entry)
+        print("%s 목록에 추가: %s" % ("차단" if args.action == "block" else "허용", entry))
+    else:
+        if haproxy_available():
+            haproxy("del acl %s %s" % (path, entry), check=False)
+        removed = list_file_remove(path, entry)
+        print("%s: %s" % ("삭제" if removed else "목록에 없음", entry))
+
+
+def cmd_rate(args):
+    if args.action == "reset":
+        if not args.ip:
+            raise CLIError("IP를 지정하세요")
+        try:
+            ip = ipaddress.ip_address(args.ip.strip())
+        except ValueError:
+            raise CLIError("IP 주소가 아닙니다: %s" % args.ip)
+        # 비율 테이블은 ipv6 형식이므로 IPv4는 ::ffff:a.b.c.d 키로 저장됩니다.
+        key = str(ip) if ip.version == 6 else "::ffff:%s" % ip
+        for t in ("st_rate_ip", "st_rate_auth"):
+            haproxy("clear table %s key %s" % (t, key))
+        print("카운터 초기화: %s" % ip)
+        return
+    limits = show_map(LIMITS_MAP)
+    for table_name, limit_key, title in (("st_rate_ip", "rate_limit_ip", "전체 요청"), ("st_rate_auth", "rate_limit_auth", "로그인/가입 POST")):
+        out = haproxy("show table %s data.http_req_rate gt %d" % (table_name, args.min - 1))
+        rows = []
+        for line in out.splitlines():
+            m = re.search(r"key=(\S+).*http_req_rate\(\d+\)=(\d+)", line)
+            if m:
+                key = m.group(1)
+                if key.startswith("::ffff:"):
+                    key = key[7:]
+                rows.append((key, int(m.group(2))))
+        rows.sort(key=lambda r: -r[1])
+        print("[%s] 5분 요청 수 (한도 %s)" % (title, limits.get(limit_key, "?")))
+        if rows:
+            table([(k, v) for k, v in rows[:args.n]], ["IP", "5분 요청 수"])
+        else:
+            print("  (없음)")
+        print()
+
+
+def cmd_targets(_args):
+    rows = []
+    for r in parse_stat():
+        if r.get("svname") in ("FRONTEND", "BACKEND"):
+            continue
+        px = r.get("pxname", "")
+        if px.startswith("st_") or px in ("be_acme",):
+            continue
+        rows.append((px, r.get("svname"), r.get("status"), r.get("check_status", ""), r.get("scur", ""), r.get("lastchg", "")))
+    print("대상 그룹 (≈ describe-target-health):")
+    table(rows, ["BACKEND", "SERVER", "STATUS", "CHECK", "CONNS", "LASTCHG(s)"])
+
+
+def cmd_target(args):
+    if "/" not in args.server:
+        raise CLIError("BACKEND/SERVER 형식으로 지정하세요 (예: tg_family_photos/app1)")
+    haproxy("set server %s state %s" % (args.server, args.state))
+    print("%s → %s" % (args.server, args.state))
+    if args.state == "drain":
+        print("새 요청은 보내지 않고 기존 연결은 유지합니다 (≈ deregistration delay). 배포 후 'ready' 로 되돌리세요.")
+
+
+def parse_since(text):
+    m = re.match(r"^(\d+)([smhd])$", text or "")
+    if not m:
+        raise CLIError("--since 형식: 30m, 2h, 1d")
+    n, unit = int(m.group(1)), m.group(2)
+    return time.time() - n * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+
+
+def cmd_events(args):
+    since_ms = parse_since(args.since) * 1000
+    if not os.path.exists(WAF_LOG):
+        raise CLIError("WAF 로그가 없습니다: %s" % WAF_LOG)
+    events = []
+    with open(WAF_LOG, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if e.get("timestamp", 0) < since_ms:
+                continue
+            if args.blocked and e.get("action") not in ("BLOCK", "COUNT"):
+                continue
+            events.append(e)
+    print("기간 %s, 이벤트 %d건" % (args.since, len(events)))
+    by_action = collections.Counter(e.get("action") for e in events)
+    by_rule = collections.Counter(e.get("terminatingRuleId") for e in events if e.get("terminatingRuleId") != "Default_Action")
+    by_ip = collections.Counter(e.get("httpRequest", {}).get("clientIp") for e in events)
+    by_label = collections.Counter(l.get("name") for e in events for l in e.get("labels", []))
+    by_uri = collections.Counter(e.get("httpRequest", {}).get("uri") for e in events)
+    for title, c in (("동작", by_action), ("차단 규칙", by_rule), ("라벨", by_label), ("클라이언트 IP", by_ip), ("URI", by_uri)):
+        print("\n[%s]" % title)
+        for k, v in c.most_common(args.n):
+            print("  %6d  %s" % (v, k))
+    print("\n[최근 %d건]" % min(args.n, len(events)))
+    for e in events[-args.n:]:
+        r = e.get("httpRequest", {})
+        ts = dt.datetime.fromtimestamp(e.get("timestamp", 0) / 1000).strftime("%m-%d %H:%M:%S")
+        print("  %s %-6s %-8s %-15s %s %s  id=%s" % (ts, e.get("action"), e.get("terminatingRuleId"), r.get("clientIp"),
+                                                   r.get("httpMethod"), r.get("uri"), r.get("requestId")))
+
+
+# ── list updates (atomic runtime swap: prepare → add @ver → commit) ─────────
+
+def runtime_replace(kind, path, entries):
+    """Atomically replace an ACL ("acl") or map ("map") at runtime."""
+    if not haproxy_available():
+        print("  HAProxy 소켓이 없어 파일만 갱신했습니다(다음 시작 시 적용).")
+        return
+    out = haproxy("prepare %s %s" % (kind, path))
+    m = re.search(r"New version created:\s*(\d+)", out)
+    if not m:
+        raise CLIError("prepare %s 실패: %s" % (kind, out.strip()))
+    ver = m.group(1)
+    batch = []
+    for e in entries:
+        batch.append("add %s @%s %s %s" % (kind, ver, path, e))
+        if len(batch) >= 200:
+            haproxy(";".join(batch))
+            batch = []
+    if batch:
+        haproxy(";".join(batch))
+    haproxy("commit %s @%s %s" % (kind, ver, path))
+
+
+def fetch(url, timeout=60):
+    req = urllib.request.Request(url, headers={"User-Agent": "wafctl/1.0 (+haproxy-modsecurity)"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = resp.read()
+    if url.endswith(".gz") or data[:2] == b"\x1f\x8b":
+        data = gzip.decompress(data)
+    return data.decode("utf-8", errors="replace")
+
+
+CIDR_RE = re.compile(r"^\s*([0-9a-fA-F:.]+(?:/\d{1,3})?)")
+
+
+def parse_ip_feed(text):
+    nets = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line[0] in "#;":
+            continue
+        cand = None
+        if line.startswith("{"):
+            try:
+                cand = json.loads(line).get("cidr")
+            except ValueError:
+                continue
+        else:
+            m = CIDR_RE.match(line)
+            cand = m.group(1) if m else None
+        if not cand:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(cand, strict=False))
+        except ValueError:
+            continue
+    return nets
+
+
+def safe_network(n):
+    """Never block private, loopback, link-local or absurdly broad ranges."""
+    if n.is_private or n.is_loopback or n.is_link_local or n.is_multicast or n.is_reserved or n.is_unspecified:
+        return False
+    return n.prefixlen >= (8 if n.version == 4 else 16)
+
+
+def cmd_update_ipsets(args):
+    sources = read_list_file(REPUTATION_SOURCES)
+    if not sources:
+        raise CLIError("%s 에 출처 URL이 없습니다" % REPUTATION_SOURCES)
+    nets, ok = [], 0
+    for url in sources:
+        try:
+            got = parse_ip_feed(fetch(url))
+            print("  %-60s %6d" % (url, len(got)))
+            nets.extend(got)
+            ok += 1
+        except Exception as e:  # noqa: BLE001 - report and continue with other feeds
+            print("  %-60s 실패: %s" % (url, e), file=sys.stderr)
+    if ok == 0:
+        raise CLIError("모든 출처에서 내려받지 못했습니다. 기존 목록을 유지합니다.")
+    kept = [n for n in nets if safe_network(n)]
+    collapsed = list(ipaddress.collapse_addresses([n for n in kept if n.version == 4])) + \
+        list(ipaddress.collapse_addresses([n for n in kept if n.version == 6]))
+    entries = [str(n) for n in collapsed]
+    old = read_list_file(LISTS["reputation"])
+    print("평판 목록: %d 항목 (이전 %d, 제외 %d)" % (len(entries), len(old), len(nets) - len(kept)))
+    if not entries and old and not args.force:
+        raise CLIError("새 목록이 비어 있습니다(출처 장애?). 기존 목록을 유지합니다. 강제로 비우려면 --force")
+    if args.dry_run:
+        return
+    header = "# IP 평판 목록 (≈ AWSManagedRulesAmazonIpReputationList) — wafctl update-ipsets 자동 생성\n" \
+             "# 갱신: %s, 출처: %s\n" % (dt.datetime.now().isoformat(timespec="seconds"), ", ".join(sources))
+    write_atomic(LISTS["reputation"], header + "\n".join(entries) + "\n")
+    runtime_replace("acl", LISTS["reputation"], entries)
+    print("적용 완료")
+
+
+def dbip_urls():
+    today = dt.date.today()
+    first = today.replace(day=1)
+    prev = (first - dt.timedelta(days=1)).replace(day=1)
+    return ["https://download.db-ip.com/free/dbip-country-lite-%s.csv.gz" % d.strftime("%Y-%m") for d in (first, prev)]
+
+
+def cmd_update_geoip(args):
+    countries = {c.upper() for c in read_list_file(GEO_LIST)}
+    if not args.all and not countries:
+        print("geo-countries.lst 가 비어 있어 빈 국가 맵을 만듭니다(--all 로 전체 국가 포함).")
+    if args.file:
+        opener = gzip.open if args.file.endswith(".gz") else open
+        with opener(args.file, "rt", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    else:
+        text, last_err = None, None
+        for url in ([args.url] if args.url else dbip_urls()):
+            try:
+                text = fetch(url, timeout=300)
+                print("내려받음: %s" % url)
+                break
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+        if text is None:
+            raise CLIError("국가 IP 데이터를 내려받지 못했습니다: %s" % last_err)
+    entries, count = [], collections.Counter()
+    for line in io.StringIO(text):
+        parts = line.strip().split(",")
+        if len(parts) < 3:
+            continue
+        start, end, cc = parts[0].strip('"'), parts[1].strip('"'), parts[2].strip('"').upper()
+        if not (args.all or cc in countries) or len(cc) != 2:
+            continue
+        try:
+            for net in ipaddress.summarize_address_range(ipaddress.ip_address(start), ipaddress.ip_address(end)):
+                entries.append("%s %s" % (net, cc))
+                count[cc] += 1
+        except (ValueError, TypeError):
+            continue
+    print("국가 맵: %d 대역 (%s)" % (len(entries), ", ".join("%s=%d" % kv for kv in count.most_common(10)) or "없음"))
+    missing = sorted(countries - set(count)) if not args.all else []
+    if missing:
+        print("데이터에 없는 국가 코드: %s" % ", ".join(missing), file=sys.stderr)
+    if args.dry_run:
+        return
+    header = "# IP 대역 → 국가 코드 — wafctl update-geoip 자동 생성 (%s)\n" \
+             "# IP Geolocation by DB-IP (https://db-ip.com), CC BY 4.0\n" % dt.datetime.now().isoformat(timespec="seconds")
+    write_atomic(GEO_MAP, header + "\n".join(entries) + "\n")
+    runtime_replace("map", GEO_MAP, entries)
+    print("적용 완료")
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="wafctl", description=__doc__.split("\n\n")[0],
+                                formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__.split("\n\n", 1)[1])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("status").set_defaults(func=cmd_status)
+    s = sub.add_parser("mode")
+    s.add_argument("host", nargs="?")
+    s.add_argument("value", nargs="?")
+    s.set_defaults(func=cmd_mode)
+    sub.add_parser("settings").set_defaults(func=cmd_settings)
+    s = sub.add_parser("set")
+    s.add_argument("key")
+    s.add_argument("value")
+    s.set_defaults(func=cmd_set)
+    s = sub.add_parser("ip")
+    s.add_argument("action", choices=["list", "block", "unblock", "allow", "unallow"])
+    s.add_argument("target", nargs="?")
+    s.set_defaults(func=cmd_ip)
+    s = sub.add_parser("rate")
+    s.add_argument("action", nargs="?", choices=["top", "reset"], default="top")
+    s.add_argument("ip", nargs="?")
+    s.add_argument("--min", type=int, default=1)
+    s.add_argument("-n", type=int, default=20)
+    s.set_defaults(func=cmd_rate)
+    sub.add_parser("targets").set_defaults(func=cmd_targets)
+    s = sub.add_parser("target")
+    s.add_argument("state", choices=["drain", "ready", "maint"])
+    s.add_argument("server")
+    s.set_defaults(func=cmd_target)
+    s = sub.add_parser("events")
+    s.add_argument("--since", default="1h")
+    s.add_argument("--blocked", action="store_true")
+    s.add_argument("-n", type=int, default=10)
+    s.set_defaults(func=cmd_events)
+    s = sub.add_parser("update-ipsets")
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--force", action="store_true")
+    s.set_defaults(func=cmd_update_ipsets)
+    s = sub.add_parser("update-geoip")
+    s.add_argument("--all", action="store_true", help="모든 국가 포함 (메모리 사용 증가)")
+    s.add_argument("--file", help="내려받은 DB-IP CSV(.gz) 파일 사용")
+    s.add_argument("--url", help="다른 다운로드 URL")
+    s.add_argument("--dry-run", action="store_true")
+    s.set_defaults(func=cmd_update_geoip)
+    args = p.parse_args(argv)
+    try:
+        args.func(args)
+    except CLIError as e:
+        print("wafctl: %s" % e, file=sys.stderr)
+        return 1
+    except PermissionError as e:
+        print("wafctl: 권한이 없습니다 (root로 실행하세요): %s" % e, file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

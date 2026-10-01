@@ -1,0 +1,2 @@
+# IP 대역 → 국가 코드 (geo-countries.lst 의 국가만). 자동 생성: wafctl update-geoip
+# IP Geolocation by DB-IP (https://db-ip.com), CC BY 4.0

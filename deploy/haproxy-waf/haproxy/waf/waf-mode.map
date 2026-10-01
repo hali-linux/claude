@@ -1,0 +1,6 @@
+# 호스트별 WAF 모드  (≈ Web ACL 연결 + 규칙 동작 Block/Count)
+#   block  규칙에 걸리면 차단 (기본값: 이 파일에 없는 호스트)
+#   count  평가·로그만 하고 차단하지 않음 — 처음 도입 시 1~2주 운영하며 오탐 확인
+#   off    WAF를 거치지 않음
+# 런타임 변경(재시작 없이, 파일에도 저장):  wafctl mode <host> <block|count|off>
+photos.example.com block

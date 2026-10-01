@@ -1,0 +1,12 @@
+# 국가 규칙(geo_mode block/allow)을 쓸 때만 활성화하세요:
+#   systemctl enable --now waf-update-geoip.timer
+[Unit]
+Description=Monthly WAF country IP ranges update
+
+[Timer]
+OnCalendar=*-*-03 04:00:00
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

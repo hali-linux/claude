@@ -1,0 +1,6 @@
+# 국가 규칙에 쓰는 국가 코드 (ISO 3166-1 alpha-2, 한 줄에 하나)
+# waf-settings.map 의 geo_mode 에 따라 의미가 달라집니다.
+#   geo_mode block → 이 국가들에서 온 요청을 차단
+#   geo_mode allow → 이 국가들만 허용 (예: 가족이 한국에만 있다면 KR)
+# 국가를 바꾼 뒤에는 "wafctl update-geoip" 로 geoip-country.map 을 다시 만드세요.
+KR

@@ -46,8 +46,10 @@ services:
     environment:
       DATABASE_URL: postgresql://family:${POSTGRES_PASSWORD:-family}@db:5432/family_photos?schema=public
       STORAGE_LOCAL_DIR: /app/storage
+    # HAProxy WAF(deploy/haproxy-waf) 뒤에서 운영할 때는 .env 에 APP_BIND=127.0.0.1 을 지정하세요.
+    # Docker가 연 포트는 firewalld 규칙을 우회하므로, 외부에 열려 있으면 WAF를 거치지 않고 접속할 수 있습니다.
     ports:
-      - "3000:3000"
+      - "${APP_BIND:-0.0.0.0}:3000:3000"
     volumes:
       - photos:/app/storage
     depends_on:

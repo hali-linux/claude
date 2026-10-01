@@ -86,6 +86,7 @@
 ├── tests/
 │   ├── integration/           # auth, permissions, photos, albums, invitations
 │   └── unit/                  # 이미지 판별, 입력 검증, 보안 유틸
+├── deploy/haproxy-waf/        # Rocky Linux 9용 HAProxy(≈ ALB) + ModSecurity(≈ AWS WAF) 구성
 ├── Dockerfile
 ├── docker-compose.yml
 └── .env.example
@@ -162,6 +163,7 @@ APP_URL="http://localhost:3000"
 | `CLOUDFRONT_DOMAIN`, `CLOUDFRONT_KEY_PAIR_ID`, `CLOUDFRONT_PRIVATE_KEY` | – | CloudFront Signed URL 사용 시 |
 | `SMTP_URL`, `MAIL_FROM` | – | 초대 메일 발송 (없으면 링크 복사로 전달) |
 | `TRUST_PROXY` | `false` | 리버스 프록시 뒤에서 `X-Forwarded-*` 신뢰 |
+| `APP_BIND` | `0.0.0.0` | docker compose가 앱 포트(3000)를 열 주소. 프록시 뒤에서는 `127.0.0.1` |
 | `TZ`, `NEXT_PUBLIC_TIMEZONE` | `Asia/Seoul` | 날짜 검색·표시 기준 시간대 |
 
 ## 6. 데이터베이스 생성
@@ -284,8 +286,9 @@ docker compose up -d
 ```
 
 1. **HTTPS 필수**: ALB + ACM 인증서, 또는 Nginx/Caddy + Let's Encrypt. `APP_URL=https://photos.example.com`
+   - 자체 서버(Rocky Linux 9)라면 [`deploy/haproxy-waf`](deploy/haproxy-waf/README.md): HAProxy가 ALB 역할(TLS, 라우팅, 상태 확인)을, ModSecurity + OWASP CRS가 AWS WAF 역할(SQLi·XSS 등 차단, IP 목록, 비율 제한, count/block 모드)을 합니다. `sudo ./install.sh --domain photos.example.com --mode count`
    → Secure `__Host-` 쿠키, HSTS, `upgrade-insecure-requests`가 자동 적용됩니다.
-2. 리버스 프록시 뒤라면 `TRUST_PROXY=true` (Rate Limit가 실제 클라이언트 IP 기준으로 동작)
+2. 리버스 프록시 뒤라면 `TRUST_PROXY=true` (Rate Limit가 실제 클라이언트 IP 기준으로 동작). docker compose로 앱을 띄우면 `APP_BIND=127.0.0.1`로 3000 포트를 외부에 열지 마세요(프록시·WAF 우회 방지).
 3. Nginx를 쓴다면 업로드 크기 허용: `client_max_body_size 35m;`
 4. DB: RDS PostgreSQL + 자동 백업. 배포 시 `npm run db:deploy`(또는 compose의 `migrate`) 실행
 5. 이미지: `docker build --target runner -t family-photos .` 후 ECS/EC2/Lightsail 등에서 실행

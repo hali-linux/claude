@@ -1,0 +1,4 @@
+# 본문이 WAF 검사 한도(64KB)를 넘어도 차단하지 않고 본문 검사만 생략할 경로(접두사).
+# 헤더·URI·쿼리는 계속 검사하며, 크기는 waf-settings.map 의 max_upload_bytes 로 제한합니다.
+# (≈ AWS WAF oversize handling CONTINUE + SizeRestrictions_BODY 예외)
+/api/photos/upload

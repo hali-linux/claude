@@ -1,0 +1,32 @@
+# 이 앱(Next.js)에 존재하지 않는 경로들로, 요청 자체가 취약점 스캔입니다.
+# REQUEST_FILENAME(소문자, 디코딩 후)에 아래 문자열이 포함되면 차단합니다.
+/actuator
+/jolokia
+/web-inf/
+/meta-inf/
+/wp-admin
+/wp-login.php
+/wp-content/
+/wp-includes/
+/xmlrpc.php
+/phpmyadmin
+/pma/
+/cgi-bin/
+/vendor/phpunit/
+/.env
+/.git/
+/.svn/
+/.aws/
+/.ssh/
+/.docker/
+/.ds_store
+/server-status
+/manager/html
+/solr/admin
+/boaform/
+/hnap1
+/autodiscover/autodiscover.xml
+/owa/auth/
+/ecp/
+/remote/fgt_lang
+/geoserver/

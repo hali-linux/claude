@@ -1,0 +1,2 @@
+# IP 차단 목록 (≈ IP set + Block). 한 줄에 IP 또는 CIDR 하나.
+# 런타임 추가/삭제(파일에도 저장):  wafctl ip block 192.0.2.10   /   wafctl ip unblock 192.0.2.10

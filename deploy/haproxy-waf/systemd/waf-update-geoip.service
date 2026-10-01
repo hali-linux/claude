@@ -1,0 +1,8 @@
+[Unit]
+Description=Update WAF country IP ranges (DB-IP Lite)
+After=network-online.target haproxy.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/wafctl update-geoip
