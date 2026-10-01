@@ -214,6 +214,7 @@ webterm-helper: file upload dir='~' name='data.csv' size=1048576; user=alice rho
 
 | 증상 | 확인할 것 |
 | --- | --- |
+| 설치 중 `AH00526 ... ssl.conf: SSLCertificateFile: file '/etc/pki/tls/certs/localhost.crt' does not exist` | httpd 를 한 번도 시작하지 않은 서버에서 생기는 문제로, 현재 `install.sh` 는 이 인증서를 자동으로 만듭니다. 이전 버전이라면 `sudo systemctl start httpd-init.service` 후 다시 실행 |
 | `503 Service Unavailable` | `systemctl status webterm` · SELinux 거부 여부 `sudo ausearch -m avc -ts recent` (필요하면 `sudo setsebool -P httpd_can_network_connect 1`) |
 | 로그인이 계속 실패 | 사용자가 `webterm-users` 그룹인지(`id alice`), 로그인 셸이 `nologin` 이 아닌지, `journalctl -u webterm-helper` 의 `reason=` |
 | “인증 서비스에 연결할 수 없습니다” | `systemctl status webterm-helper`, `/run/webterm/helper.sock` 존재 여부 |

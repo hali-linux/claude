@@ -186,7 +186,7 @@ fi
 # ----------------------------------------------------------------- SELinux
 if command -v getenforce >/dev/null && [[ $(getenforce) != Disabled ]]; then
     msg "SELinux: httpd → 127.0.0.1:$PORT 프록시 허용"
-    if ! semanage port -a -t http_port_t -p tcp "$PORT" 2>/dev/null; then
+    if ! semanage port -a -t http_port_t -p tcp "$PORT" >/dev/null 2>&1; then
         semanage port -m -t http_port_t -p tcp "$PORT"
     fi
     setsebool -P httpd_can_network_relay 1
@@ -254,7 +254,28 @@ sed -e "s|@SERVER_NAME@|$SERVER_NAME|g" \
     -e "s|@MAX_UPLOAD@|$MAX_UPLOAD|g" \
     "$SRC_DIR/deploy/httpd-webterm.conf" > "$HTTPD_CONF"
 chmod 0644 "$HTTPD_CONF"
-httpd -t || die "httpd 설정 검사 실패 ($HTTPD_CONF)"
+
+# mod_ssl's default /etc/httpd/conf.d/ssl.conf uses localhost.crt/.key, which
+# Rocky Linux only creates when httpd starts for the first time
+# (httpd-init.service).  On a server where httpd was installed but never
+# started they do not exist yet and "httpd -t" fails, so create them now.
+SSL_CONF=/etc/httpd/conf.d/ssl.conf
+LOCAL_CERT=/etc/pki/tls/certs/localhost.crt
+LOCAL_KEY=/etc/pki/tls/private/localhost.key
+if [[ -f $SSL_CONF ]] \
+   && grep -Eq "^[[:space:]]*SSLCertificateFile[[:space:]]+$LOCAL_CERT" "$SSL_CONF" \
+   && [[ ! -s $LOCAL_CERT || ! -s $LOCAL_KEY ]]; then
+    msg "mod_ssl 기본 인증서 생성: $LOCAL_CERT (httpd 를 처음 시작할 때 만들어지는 파일)"
+    systemctl start httpd-init.service >/dev/null 2>&1 || true
+    if [[ ! -s $LOCAL_CERT || ! -s $LOCAL_KEY ]]; then
+        (umask 077; openssl req -x509 -newkey rsa:2048 -sha256 -days 365 -nodes \
+            -keyout "$LOCAL_KEY" -out "$LOCAL_CERT" \
+            -subj "/CN=$(hostname -f 2>/dev/null || hostname)" 2>/dev/null)
+        chmod 0644 "$LOCAL_CERT"
+        if command -v restorecon >/dev/null; then restorecon -F "$LOCAL_CERT" "$LOCAL_KEY"; fi
+    fi
+fi
+httpd -t || die "httpd 설정 검사 실패: 위 메시지에 나온 파일과 줄 번호를 확인하세요."
 systemctl enable httpd.service >/dev/null
 systemctl restart httpd.service
 
